@@ -54,6 +54,11 @@ async function exercise(client, label) {
   if (movie) {
     const detail = await call(client, "jellyfin_get_item", { itemId: movie.id });
     if (detail && !detail.audio?.length) console.log("  note: movie detail has no audio streams listed");
+    // Metadata tools (read-only ones; the identify search queries TMDb etc. via the server).
+    await call(client, "jellyfin_get_metadata", { itemId: movie.id });
+    await call(client, "jellyfin_identify_search", { itemId: movie.id, limit: 3 });
+    await call(client, "jellyfin_list_images", { itemId: movie.id });
+    await call(client, "jellyfin_search_remote_images", { itemId: movie.id, type: "Primary", limit: 3 });
   }
   if (libs?.[0]) await call(client, "jellyfin_browse", { parentId: libs[0].id, recursive: false, limit: 5 });
   await call(client, "jellyfin_browse", { types: ["Movie"], isPlayed: false, minCommunityRating: 7, includeOverview: true, limit: 3 });

@@ -21,9 +21,24 @@ const movie = {
     { Type: "Audio", Index: 1, Language: "eng", Codec: "truehd", Channels: 8 },
     { Type: "Subtitle", Index: 3, Language: "eng", DisplayTitle: "English" },
   ],
+  Tags: ["cyberpunk"], Studios: [{ Name: "Warner Bros.", Id: "s1" }], ProviderIds: { Tmdb: "78", Imdb: "tt0083658" },
+  People: [{ Name: "Harrison Ford", Type: "Actor", Role: "Deckard", Id: "p1" }], LockedFields: [], LockData: false,
 };
 
+// Like the real server, POST /Items/{id} overwrites every editable field with
+// what was sent, so a client that drops a field would wipe it here too.
+const EDITABLE = ["Name", "OriginalTitle", "ForcedSortName", "Overview", "Taglines", "Genres", "Tags", "Studios", "People",
+  "ProductionYear", "PremiereDate", "EndDate", "OfficialRating", "CustomRating", "CommunityRating", "CriticRating",
+  "IndexNumber", "ParentIndexNumber", "ProviderIds", "LockData", "LockedFields"];
+
 const routes = {
+  "POST /Items/aaaa": (body) => {
+    for (const k of EDITABLE) movie[k] = body[k];
+    return undefined;
+  },
+  "GET /Items/aaaa/MetadataEditor": () => ({ ParentalRatingOptions: [{ Name: "R" }, { Name: "PG-13" }], ExternalIdInfos: [{ Key: "Tmdb", Name: "TheMovieDb", Type: "Movie" }] }),
+  "POST /Items/RemoteSearch/Movie": () => [{ Name: "Blade Runner", ProductionYear: 1982, ProviderIds: { Tmdb: "78" }, SearchProviderName: "TheMovieDb" }],
+  "GET /Items/aaaa/Images": () => [{ ImageType: "Primary", Width: 1000, Height: 1500, Size: 1234 }, { ImageType: "Backdrop", ImageIndex: 0, Width: 1920, Height: 1080 }],
   "GET /Users": () => [{ Id: USER_ID, Name: "admin", Policy: { IsAdministrator: true } }],
   "GET /Users/Me": () => ({ __status: 400 }),
   "GET /UserViews": () => ({ Items: [{ Id: "lib1", Name: "Movies", CollectionType: "movies" }] }),
@@ -36,9 +51,12 @@ const routes = {
   "POST /Sessions/sess1/Playing/Seek": () => undefined,
 };
 
-const jellyfin = http.createServer((req, res) => {
+const jellyfin = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
-  calls.push({ method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), auth: req.headers.authorization });
+  let raw = "";
+  for await (const chunk of req) raw += chunk;
+  const reqBody = raw ? JSON.parse(raw) : undefined;
+  calls.push({ method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), auth: req.headers.authorization, body: reqBody });
   if (!req.headers.authorization?.includes(`Token="${API_KEY}"`)) {
     res.writeHead(401).end();
     return;
@@ -48,7 +66,7 @@ const jellyfin = http.createServer((req, res) => {
     res.writeHead(404).end("not mocked");
     return;
   }
-  const body = route();
+  const body = route(reqBody);
   if (body?.__status) {
     res.writeHead(body.__status).end();
     return;
@@ -106,11 +124,58 @@ async function exercise(client, label) {
   console.log(`ok - ${label}: ${tools.length} tools, calls succeeded`);
 }
 
+async function exerciseMetadata(client) {
+  const meta = parse(await client.callTool({ name: "jellyfin_get_metadata", arguments: { itemId: "aaaa" } }));
+  assert.deepEqual(meta.options.parentalRatings, ["R", "PG-13"]);
+  assert.equal(meta.metadata.people[0].name, "Harrison Ford");
+
+  const upd = parse(await client.callTool({
+    name: "jellyfin_update_metadata",
+    arguments: { itemId: "aaaa", sortName: "Blade Runner 1", addTags: ["noir", "CYBERPUNK"], providerIds: { Imdb: "" }, officialRating: "R" },
+  }));
+  assert.deepEqual(Object.keys(upd.changed).sort(), ["lockedFields", "officialRating", "providerIds", "sortName", "tags"]);
+  // Untouched fields must survive the full-object round trip.
+  assert.equal(movie.Overview, "A blade runner must pursue replicants.");
+  assert.equal(movie.People[0].Name, "Harrison Ford");
+  assert.equal(movie.Studios[0].Name, "Warner Bros.");
+  assert.deepEqual(movie.Genres, ["Science Fiction"]);
+  assert.equal(movie.ProductionYear, 1982);
+  // Edits applied: case-insensitive tag dedupe, provider id removal, field locks.
+  assert.deepEqual(movie.Tags, ["cyberpunk", "noir"]);
+  assert.deepEqual(movie.ProviderIds, { Tmdb: "78" });
+  assert.deepEqual(movie.LockedFields.sort(), ["OfficialRating", "Tags"]);
+  // The POST must carry fields we never edited (the DTO isn't trimmed).
+  assert.ok(calls.findLast((c) => c.method === "POST" && c.path === "/Items/aaaa").body.MediaStreams);
+
+  const cleared = parse(await client.callTool({ name: "jellyfin_update_metadata", arguments: { itemId: "aaaa", sortName: "", lockEditedFields: false } }));
+  assert.equal(cleared.changed.sortName.to, undefined);
+  assert.equal(movie.ForcedSortName, null);
+
+  const bulk = parse(await client.callTool({ name: "jellyfin_bulk_edit_tags", arguments: { itemIds: ["aaaa", "missing"], removeTags: ["noir"] } }));
+  assert.equal(bulk.updated, 1);
+  assert.equal(bulk.errors, 1);
+  assert.deepEqual(movie.Tags, ["cyberpunk"]);
+
+  const noop = await client.callTool({ name: "jellyfin_bulk_edit_tags", arguments: { itemIds: ["aaaa"] } });
+  assert.equal(noop.isError, true);
+
+  const ident = parse(await client.callTool({ name: "jellyfin_identify_search", arguments: { itemId: "aaaa" } }));
+  assert.equal(ident.matches[0].providerIds.Tmdb, "78");
+  const search = calls.findLast((c) => c.path === "/Items/RemoteSearch/Movie").body;
+  assert.equal(search.SearchInfo.Name, "Blade Runner");
+  assert.equal(search.SearchInfo.Year, 1982);
+
+  const images = parse(await client.callTool({ name: "jellyfin_list_images", arguments: { itemId: "aaaa" } }));
+  assert.equal(images[1].url, `${JELLYFIN_URL}/Items/aaaa/Images/Backdrop/0`);
+  console.log("ok - metadata: edits preserve untouched fields, locks, bulk tags, identify, images");
+}
+
 // ---- stdio ----
 {
   const client = new Client({ name: "smoke", version: "0" });
   await client.connect(new StdioClientTransport({ command: process.execPath, args: ["dist/index.js"], env: baseEnv, stderr: "pipe" }));
   await exercise(client, "stdio");
+  await exerciseMetadata(client);
   await client.close();
 }
 

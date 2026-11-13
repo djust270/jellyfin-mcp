@@ -3,7 +3,7 @@
 A [Model Context Protocol](https://modelcontextprotocol.io) server for [Jellyfin](https://jellyfin.org), written in TypeScript.
 It runs over **stdio** for local clients like Claude Desktop and Claude Code, or over **streamable HTTP** so you can host it on your network.
 
-With it, an assistant can search and browse your library, see what's playing, control playback on your TVs and apps, manage playlists and watch state, and run admin tasks.
+With it, an assistant can search and browse your library, see what's playing, control playback on your TVs and apps, fix and edit metadata and artwork, manage playlists and watch state, and run admin tasks.
 
 ## Setup
 
@@ -103,10 +103,23 @@ This opens the MCP Inspector against the stdio build. Logs go to stderr, because
 | ✎ | `jellyfin_send_message` | Show a message on screen |
 | Playlists | `jellyfin_list_playlists`, `jellyfin_get_playlist_items` | |
 | ✎ | `jellyfin_create_playlist`, `jellyfin_add_to_playlist`, `jellyfin_remove_from_playlist` | |
+| Metadata | `jellyfin_get_metadata` | Editable fields as stored, plus the valid parental ratings and external id types |
+| ✎ | `jellyfin_update_metadata` | Edit title, sort title, overview, taglines, genres, tags, studios, cast and crew, dates, ratings, episode/season numbers, provider ids; returns a before/after diff |
+| ✎ | `jellyfin_bulk_edit_tags` | Add or remove tags and genres across many items |
+| | `jellyfin_identify_search` | Search TMDb, TVDb, MusicBrainz and other providers for the correct match |
+| ✎ | `jellyfin_identify_apply` | Re-match the item and pull fresh metadata (Jellyfin's "Identify") |
+| | `jellyfin_list_images`, `jellyfin_search_remote_images` | Current artwork, and candidate artwork from the providers |
+| ✎ | `jellyfin_set_image`, `jellyfin_delete_image` | Set artwork from a URL, or remove it |
 | Admin | `jellyfin_get_system_info`, `jellyfin_list_users`, `jellyfin_get_activity_log`, `jellyfin_list_scheduled_tasks` | |
 | ✎ | `jellyfin_run_scheduled_task`, `jellyfin_refresh_library` | Run a scheduled task, start a library scan, or refresh one item's metadata |
 
 ✎ = changes state; hidden when `JELLYFIN_READ_ONLY=true`. Every tool sets MCP annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`).
+
+### How metadata edits work
+
+Jellyfin's update endpoint (`POST /Items/{id}`) overwrites every editable field with what it receives, so a request that leaves a field out clears it. `jellyfin_update_metadata` and `jellyfin_bulk_edit_tags` therefore read the full item, change only the fields you asked for, and send the complete item back. The smoke test enforces this: its fake server applies the same overwrite rule and checks that untouched fields survive.
+
+By default, edited fields that Jellyfin can lock (name, overview, genres, tags, studios, cast, official rating) are locked. That way a "replace all metadata" refresh or a re-identify won't undo your edits. Pass `lockEditedFields: false` to skip locking. Most metadata calls need an admin token or an admin user.
 
 Responses are compact JSON summaries rather than raw Jellyfin payloads, to keep token use down. Times are shown as `h:mm:ss`, and positions are passed in as seconds; the server converts to and from Jellyfin ticks.
 
@@ -119,7 +132,7 @@ src/
   server.ts             builds the McpServer and registers tools
   jellyfin/client.ts    REST client: auth, user resolution, errors
   jellyfin/format.ts    trims DTOs into compact summaries
-  tools/                library, playback, playlists, admin
+  tools/                library, playback, playlists, metadata, admin
   transports/stdio.ts
   transports/http.ts    Express + StreamableHTTPServerTransport, sessions, auth
 test/smoke.mjs          end-to-end test against a fake Jellyfin, over both transports

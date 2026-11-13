@@ -3,6 +3,7 @@ import { SERVER_NAME, SERVER_VERSION } from "./config.js";
 import type { JellyfinClient } from "./jellyfin/client.js";
 import { registerAdminTools } from "./tools/admin.js";
 import { registerLibraryTools } from "./tools/library.js";
+import { registerMetadataTools } from "./tools/metadata.js";
 import { registerPlaybackTools } from "./tools/playback.js";
 import { registerPlaylistTools } from "./tools/playlists.js";
 
@@ -31,6 +32,7 @@ export function createServer(jf: JellyfinClient, opts: ServerOptions): McpServer
   registerLibraryTools(ctx);
   registerPlaybackTools(ctx);
   registerPlaylistTools(ctx);
+  registerMetadataTools(ctx);
   registerAdminTools(ctx);
   return server;
 }

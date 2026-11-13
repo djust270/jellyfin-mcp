@@ -21,6 +21,8 @@ interface RequestOptions {
   body?: unknown;
   /** Skip the lazy login / user resolution step (used by the auth calls themselves). */
   raw?: boolean;
+  /** Override the default request timeout (some calls wait for a full metadata refresh). */
+  timeoutMs?: number;
 }
 
 /**
@@ -134,7 +136,7 @@ export class JellyfinClient {
 
     let res: Response;
     try {
-      res = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(this.cfg.timeoutMs) });
+      res = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(opts.timeoutMs ?? this.cfg.timeoutMs) });
     } catch (err) {
       throw new JellyfinError(`Could not reach Jellyfin at ${this.cfg.url}: ${(err as Error).message}`);
     }
