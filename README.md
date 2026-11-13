@@ -1,0 +1,136 @@
+# jellyfin-mcp
+
+A [Model Context Protocol](https://modelcontextprotocol.io) server for [Jellyfin](https://jellyfin.org), written in TypeScript.
+It runs over **stdio** for local clients like Claude Desktop and Claude Code, or over **streamable HTTP** so you can host it on your network.
+
+With it, an assistant can search and browse your library, see what's playing, control playback on your TVs and apps, manage playlists and watch state, and run admin tasks.
+
+## Setup
+
+```bash
+npm install
+npm run build
+```
+
+Requires Node 20+. Built against the Jellyfin 10.11 API (`openapi.json` in this repo).
+
+### Authentication
+
+Use one of these:
+
+| Option | Env vars | Notes |
+|---|---|---|
+| API key | `JELLYFIN_API_KEY` | Create in **Dashboard → API Keys**. Gives admin access. An API key isn't tied to a user, so set `JELLYFIN_USERNAME` or `JELLYFIN_USER_ID` to choose whose library, watch state and favorites to use. Otherwise the server uses the first admin. |
+| User login | `JELLYFIN_USERNAME` + `JELLYFIN_PASSWORD` | Logs in on the first call and acts as that user. Admin tools only work if the user is an admin. |
+
+Set `JELLYFIN_READ_ONLY=true` to hide every tool that changes state (playback control, played/favorite, playlists, scans).
+
+## Running
+
+### stdio (default)
+
+```bash
+JELLYFIN_URL=http://localhost:8096 JELLYFIN_API_KEY=... node dist/index.js
+```
+
+**Claude Desktop** (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "jellyfin": {
+      "command": "node",
+      "args": ["C:\\Users\\Dave\\Jellyfin-MCP\\dist\\index.js"],
+      "env": {
+        "JELLYFIN_URL": "http://localhost:8096",
+        "JELLYFIN_API_KEY": "your-api-key",
+        "JELLYFIN_USERNAME": "your-username"
+      }
+    }
+  }
+}
+```
+
+**Claude Code**:
+
+```bash
+claude mcp add jellyfin -e JELLYFIN_URL=http://localhost:8096 -e JELLYFIN_API_KEY=your-api-key -- node C:/Users/Dave/Jellyfin-MCP/dist/index.js
+```
+
+### Streamable HTTP
+
+```bash
+MCP_AUTH_TOKEN=change-me JELLYFIN_URL=... JELLYFIN_API_KEY=... node dist/index.js --transport http --port 8787
+```
+
+- Endpoint: `http://127.0.0.1:8787/mcp` (POST, GET for the SSE stream, DELETE to end a session). Each client gets its own `Mcp-Session-Id`. Idle sessions are dropped after 30 minutes.
+- Health check: `GET /healthz`
+- With `MCP_AUTH_TOKEN` set, every request must send `Authorization: Bearer <token>`.
+- By default the server binds to `127.0.0.1` and rejects requests whose `Host` header isn't a loopback name (DNS rebinding protection). To expose it on your LAN, set `MCP_HTTP_HOST=0.0.0.0`, `MCP_AUTH_TOKEN`, and `MCP_ALLOWED_HOSTS=<the hostname clients use>`. The server logs a warning if you bind to a non-loopback address without a token.
+
+Claude Code over HTTP:
+
+```bash
+claude mcp add --transport http jellyfin http://127.0.0.1:8787/mcp --header "Authorization: Bearer change-me"
+```
+
+### Debugging
+
+```bash
+npm run inspect
+```
+
+This opens the MCP Inspector against the stdio build. Logs go to stderr, because stdout is reserved for the protocol.
+
+## Tools
+
+| Area | Tool | What it does |
+|---|---|---|
+| Library | `jellyfin_list_libraries` | Libraries and their ids |
+| | `jellyfin_search` | Title search across the library |
+| | `jellyfin_browse` | Filter and sort by library, type, genre, year, person, studio, tags, watched, favorite, rating; paged |
+| | `jellyfin_get_item` | Full details: cast, streams (audio and subtitle indexes), provider ids, image URL |
+| | `jellyfin_get_seasons` / `jellyfin_get_episodes` | TV structure |
+| | `jellyfin_get_similar` | Recommendations |
+| | `jellyfin_list_genres` | Genres in the library or in one library |
+| Discovery | `jellyfin_get_latest` | Recently added |
+| | `jellyfin_continue_watching` | Items you can resume |
+| | `jellyfin_next_up` | Next episode of each series you're watching |
+| User data ✎ | `jellyfin_set_played`, `jellyfin_set_favorite` | Watched and favorite state |
+| Playback | `jellyfin_list_sessions` | Connected clients, what's playing, position, transcode info |
+| ✎ | `jellyfin_play` | Play now, queue next or last, shuffle, instant mix; optional start time and audio/subtitle track |
+| ✎ | `jellyfin_playback_control` | Pause, unpause, stop, seek, next, previous |
+| ✎ | `jellyfin_send_message` | Show a message on screen |
+| Playlists | `jellyfin_list_playlists`, `jellyfin_get_playlist_items` | |
+| ✎ | `jellyfin_create_playlist`, `jellyfin_add_to_playlist`, `jellyfin_remove_from_playlist` | |
+| Admin | `jellyfin_get_system_info`, `jellyfin_list_users`, `jellyfin_get_activity_log`, `jellyfin_list_scheduled_tasks` | |
+| ✎ | `jellyfin_run_scheduled_task`, `jellyfin_refresh_library` | Run a scheduled task, start a library scan, or refresh one item's metadata |
+
+✎ = changes state; hidden when `JELLYFIN_READ_ONLY=true`. Every tool sets MCP annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`).
+
+Responses are compact JSON summaries rather than raw Jellyfin payloads, to keep token use down. Times are shown as `h:mm:ss`, and positions are passed in as seconds; the server converts to and from Jellyfin ticks.
+
+## Project layout
+
+```
+src/
+  index.ts              CLI entry: parses flags and picks a transport
+  config.ts             env and flag configuration
+  server.ts             builds the McpServer and registers tools
+  jellyfin/client.ts    REST client: auth, user resolution, errors
+  jellyfin/format.ts    trims DTOs into compact summaries
+  tools/                library, playback, playlists, admin
+  transports/stdio.ts
+  transports/http.ts    Express + StreamableHTTPServerTransport, sessions, auth
+test/smoke.mjs          end-to-end test against a fake Jellyfin, over both transports
+```
+
+To add a tool, call `defineTool(ctx, name, { title, description, input, mutating?, handler })` in a file under `src/tools/`. Errors thrown in a handler come back to the client as `isError` results.
+
+## Tests
+
+```bash
+npm run build && npm test
+```
+
+The smoke test starts a fake Jellyfin API and runs the built server over stdio, in read-only mode, and over HTTP. For HTTP it also checks bearer auth, Host-header rejection, and session teardown.
