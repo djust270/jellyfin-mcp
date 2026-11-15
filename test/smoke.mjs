@@ -151,6 +151,26 @@ async function exerciseMetadata(client) {
   assert.equal(cleared.changed.sortName.to, undefined);
   assert.equal(movie.ForcedSortName, null);
 
+  // Dates: valid YYYY-MM-DD is stored; null, "" and the text "null" clear it;
+  // malformed or impossible dates are rejected before anything is sent.
+  const update = (args) => client.callTool({ name: "jellyfin_update_metadata", arguments: { itemId: "aaaa", lockEditedFields: false, ...args } });
+  parse(await update({ premiereDate: "1982-06-25" }));
+  assert.equal(movie.PremiereDate, "1982-06-25T00:00:00.000Z");
+  for (const clear of [null, "", "null"]) {
+    movie.PremiereDate = "1982-06-25T00:00:00.000Z";
+    parse(await update({ premiereDate: clear }));
+    assert.equal(movie.PremiereDate, null, `premiereDate ${JSON.stringify(clear)} should clear`);
+  }
+  movie.PremiereDate = "1982-06-25T00:00:00.000Z";
+  const postsBefore = calls.filter((c) => c.method === "POST").length;
+  for (const bad of ["2025-02-30", "2025-13-01", "June 1982", "1982"]) {
+    const res = await update({ premiereDate: bad });
+    assert.equal(res.isError, true, `premiereDate ${bad} should be rejected`);
+    assert.match(res.content[0].text, /YYYY-MM-DD/);
+  }
+  assert.equal(calls.filter((c) => c.method === "POST").length, postsBefore);
+  assert.equal(movie.PremiereDate, "1982-06-25T00:00:00.000Z");
+
   const bulk = parse(await client.callTool({ name: "jellyfin_bulk_edit_tags", arguments: { itemIds: ["aaaa", "missing"], removeTags: ["noir"] } }));
   assert.equal(bulk.updated, 1);
   assert.equal(bulk.errors, 1);

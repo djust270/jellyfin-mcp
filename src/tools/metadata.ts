@@ -31,6 +31,34 @@ const nullableText = z.string().nullable().optional();
 const nullableNumber = (d: string) => z.number().nullable().optional().describe(`${d} (null clears)`);
 
 /**
+ * Some MCP clients don't understand `"type": ["string", "null"]` and send a
+ * JSON null as the literal text "null", so treat that (and "") as "clear".
+ */
+const isClearDate = (v: string | null) => v === null || v === "" || v.trim().toLowerCase() === "null";
+
+/** True for a real calendar date written as YYYY-MM-DD (rejects 2025-02-30, 2025-13-01, ...). */
+function isCalendarDate(v: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const d = new Date(`${v}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+}
+
+const nullableDate = z
+  .string()
+  .nullable()
+  .optional()
+  .refine((v) => v === undefined || v === null || isClearDate(v) || isCalendarDate(v.trim()), {
+    message: "Expected a date as YYYY-MM-DD, or null / empty string to clear it",
+  })
+  .describe("YYYY-MM-DD (null or empty string clears)");
+
+/** Jellyfin date value for an optional date argument: undefined = leave alone, null = clear. */
+function toJellyfinDate(v: string | null | undefined): string | null | undefined {
+  if (v === undefined) return undefined;
+  return v === null || isClearDate(v) ? null : new Date(`${v.trim()}T00:00:00Z`).toISOString();
+}
+
+/**
  * GET /Items/{id} returns the full DTO, which is exactly what POST /Items/{id}
  * expects back. Jellyfin's update replaces every editable field with what is
  * sent, so we always round-trip the complete object and only change the fields
@@ -162,8 +190,8 @@ export function registerMetadataTools(ctx: ToolContext): void {
         .optional()
         .describe("Replace the full cast & crew list"),
       productionYear: nullableNumber("Year"),
-      premiereDate: nullableText.describe("YYYY-MM-DD (null clears)"),
-      endDate: nullableText.describe("YYYY-MM-DD (null clears)"),
+      premiereDate: nullableDate,
+      endDate: nullableDate,
       officialRating: nullableText.describe("Parental rating, e.g. PG-13 / TV-MA (see jellyfin_get_metadata options)"),
       customRating: nullableText,
       communityRating: nullableNumber("0-10"),
@@ -193,8 +221,10 @@ export function registerMetadataTools(ctx: ToolContext): void {
       setText("Overview", a.overview, "Overview");
       setText("OfficialRating", a.officialRating, "OfficialRating");
       setText("CustomRating", a.customRating);
-      if (a.premiereDate !== undefined) item.PremiereDate = a.premiereDate ? new Date(a.premiereDate).toISOString() : null;
-      if (a.endDate !== undefined) item.EndDate = a.endDate ? new Date(a.endDate).toISOString() : null;
+      const premiereDate = toJellyfinDate(a.premiereDate);
+      if (premiereDate !== undefined) item.PremiereDate = premiereDate;
+      const endDate = toJellyfinDate(a.endDate);
+      if (endDate !== undefined) item.EndDate = endDate;
       if (a.taglines !== undefined) item.Taglines = a.taglines;
 
       for (const [key, value] of [
